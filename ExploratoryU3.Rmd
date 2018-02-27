@@ -1,0 +1,321 @@
+---
+title: "ClickThroughAnalysis"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Import Libraries
+
+```{r impLibraries}
+library(caTools)
+library(rpart)
+library(rpart.plot)
+library(caret)
+library(e1071)
+library(xgboost)
+library(Matrix)
+library(randomForest)
+library(MLmetrics)
+
+```
+
+## Import datasets
+
+Import dataset
+
+```{r data}
+train <- read.csv("content_train.tsv",sep = '\t')
+
+```
+
+## Data Cleaning
+We are using only `content1`
+
+```{r pressure, echo=FALSE}
+train_content1<-train[,c(1,2,11:27)]
+train_content1<-na.omit(train_content1)
+summary(train_content1)
+
+```
+### Analysing the dependent variable 
+```{r}
+table(train_content1$content_1)
+```
+Looking at the summary we can say that various columns have outliers and the dataset is highly imbalanced
+## Removing outliers using boxplot technique
+
+#### From express total spend
+```{r express total spend}
+boxplot(train_content1$express.total.spend)
+
+outlier <- boxplot.stats(train_content1$express.total.spend)$out
+min(train_content1$express.total.spend)
+train_content1$express.total.spend[train_content1$express.total.spend >= min(outlier)] <- min(outlier)
+#boxplot.stats(train_content1$express.total.spend)$out
+boxplot(train_content1$express.total.spend)
+#train_content1$express.total.spend<-log(train_content1$express.total.spend)
+```
+From metro total spend
+```{r metro.total.spend}
+boxplot(train_content1$metro.total.spend)
+outlier <- boxplot.stats(train_content1$metro.total.spend)$out
+
+train_content1$metro.total.spend[train_content1$metro.total.spend >= min(outlier)] <- min(outlier)
+#boxplot.stats(train_content1$metro.total.spend)$out
+boxplot(train_content1$metro.total.spend)
+```
+From `superstore.total.spend`
+```{r superstore.total.spend}
+boxplot(train_content1$superstore.total.spend)
+outlier <- boxplot.stats(train_content1$superstore.total.spend)$out
+
+train_content1$superstore.total.spend[train_content1$superstore.total.spend >= min(outlier)] <- min(outlier)
+boxplot(train_content1$superstore.total.spend)
+```
+From `extra.total.spend`
+```{r extra.total.spend}
+boxplot(train_content1$extra.total.spend)
+outlier <- boxplot.stats(train_content1$extra.total.spend)$out
+
+train_content1$extra.total.spend[train_content1$extra.total.spend >= min(outlier)] <- min(outlier)
+boxplot(train_content1$extra.total.spend)
+
+```
+From `fandf.total.spend`
+```{r fandf.total.spend}
+boxplot(train_content1$fandf.total.spend)
+
+outlier <- boxplot.stats(train_content1$fandf.total.spend)$out
+#min(train_content1$fandf.total.spend)
+train_content1$fandf.total.spend[train_content1$fandf.total.spend >= min(outlier)] <- min(outlier)
+boxplot(train_content1$fandf.total.spend)
+```
+From `petrol.total.spend`
+```{r petrol.total.spend}
+boxplot(train_content1$petrol.total.spend)
+
+outlier <- boxplot.stats(train_content1$petrol.total.spend)$out
+train_content1$petrol.total.spend[train_content1$petrol.total.spend >= min(outlier)] <- min(outlier)
+boxplot(train_content1$petrol.total.spend)
+
+```
+From `direct.total.spend`
+```{r direct.total.spend}
+boxplot(train_content1$direct.total.spend)
+
+outlier <- boxplot.stats(train_content1$direct.total.spend)$out
+#min(train_content1$direct.total.spend)
+train_content1$direct.total.spend[train_content1$direct.total.spend >= min(outlier)] <- min(outlier)
+boxplot(train_content1$direct.total.spend)
+hist(train_content1$direct.total.spend)
+#train_content1$direct.total.spend<-log(train_content1$direct.total.spend)
+```
+So far we have removed the outliers from all the spend variables.
+```{r split}
+set.seed(88)
+split <- sample.split(train_content1$content_1,SplitRatio = 0.7)
+Train <-subset(train_content1,split==TRUE)
+Test <-subset(train_content1,split==FALSE)
+#summary(Train)
+```
+
+## Model Building
+
+### Build decision tree using rpart.
+Since the dataset is highly imbalanced we cannot use the rpart with default parameters. We will be doing cost-sensitive learning
+We cannot use `classification error` as a performance metric here.
+We will be using `penalty error` as our performance metric
+
+Penalty Error = sum(Confusion Matrix * Penalty Matrix)/(No. of Observations)
+
+We have to change the loss matrix so that while creating splits, it penalises the errors of both the classes differently.   
+
+Creating a penalty matrix that penalises `FN` 91 times more than `FP`. We are keeping the same ratio as we have #Negatives/#Positives
+
+```{r PenaltyMatrix}
+PenaltyMatrix = matrix(data = c(0,1,91,0),nrow = 2,ncol = 2,byrow = T)
+```
+Applying Decision Tree
+```{r rpartModel}
+
+train_content1$county<- as.character(train_content1$county)
+
+model<-rpart(content_1~express.no.transactions+express.total.spend+metro.no.transactions+metro.total.spend+superstore.no.transactions+superstore.total.spend+extra.no.transactions+extra.total.spend+fandf.no.transactions+fandf.total.spend+petrol.no.transactions+petrol.total.spend+direct.no.transactions+direct.total.spend+gender+affluency,data=Train,cp=0.001,method='class',parms=list(loss=PenaltyMatrix))
+
+pred_train <- predict(model,type='class')
+table(Train$content_1,pred_train)
+ 
+```
+The tree works well on the train data, but there is a risk of overfitting as we have used very low value of `cp` complexity parameter.   
+We will be doing predictions on the test data to validate our model and calculating the penalty error
+```{r pred tree}
+pred_test <- predict(model,newdata = Test,type='class')
+conf <- as.matrix(table(`Actual` = Test$content_1,'Prediction'=pred_test))
+conf
+PenaltyError <- sum(conf*PenaltyMatrix)/nrow(Test)
+PenaltyError
+```
+From the confusion matrix above it is clear that the tree is overfitting and we are not getting the same level of performance. 
+
+### Build decission tree using `caret` 
+We are using caret package to apply cross-validation
+```{r caretRpart}
+numFolds = trainControl(method = "cv",number = 10)
+
+cpGrid <- expand.grid(cp = seq(0.00001,0.001,0.00001))
+
+model_cv<-train(as.factor(content_1)~express.no.transactions+express.total.spend+metro.no.transactions+metro.total.spend+superstore.no.transactions+superstore.total.spend+extra.no.transactions+extra.total.spend+fandf.no.transactions+fandf.total.spend+petrol.no.transactions+petrol.total.spend+direct.no.transactions+direct.total.spend+gender+affluency,data = Train,trControl=numFolds,tuneGrid=cpGrid,method="rpart",maximize=F,metric="Kappa")
+
+pred_train <-predict(model_cv)
+table(Train$content_1,pred_train)
+pred_test <-predict(model_cv,newdata = Test)
+table(Test$content_1,pred_test)
+
+```
+
+## Build RandomForest 
+Here we will be downsampling the class `0` to reduce the imbalance
+
+```{r randomForest}
+
+model_rf<-randomForest(as.factor(content_1)~express.no.transactions+express.total.spend+metro.no.transactions+metro.total.spend+superstore.no.transactions+superstore.total.spend+extra.no.transactions+extra.total.spend+fandf.no.transactions+fandf.total.spend+petrol.no.transactions+petrol.total.spend+direct.no.transactions+direct.total.spend+gender+affluency,data=Train,sampsize = c(900,351),strata=Train$content_1,cutoff=c(0.7,0.3))
+# Doing prediction on the test data 
+pred_rf <-predict(model_rf,newdata = Test)
+conf_rf <-as.matrix(table(Test$content_1,pred_rf))
+conf_rf
+PenaltyError_rf <- sum(conf_rf*PenaltyMatrix)/nrow(Test)
+PenaltyError_rf
+
+```
+
+### Applying Gradient Boosting using `xgboost`
+We will be using `scale_pos_weight` argument to balance the data.   
+
+
+Along with that we will be passing a custom evaluation metric in the `feval` argument that calculates the `penalty error` and minimizes it 
+
+```{r xgboost}
+sparse_matrix<-sparse.model.matrix(content_1~.-1-customer.id-county,data = Train)
+#sparse_matrix@Dim
+
+dtrain<-xgb.DMatrix(data=sparse_matrix,label=Train$content_1)
+
+sparse_matrix_test<-sparse.model.matrix(content_1~.-1-customer.id-county,data = Test)
+
+dtest<-xgb.DMatrix(data=sparse_matrix_test,label=Test$content_1)
+
+evalerror <- function(preds, dtrain) {
+  labels <- getinfo(dtrain, "label")
+  B<-matrix(data = rep(0,4),nrow = 2,ncol = 2)
+  A<-as.matrix(table(labels,preds>=0.5))
+  B[1:nrow(A),1:ncol(A)]<-A
+  err<-sum(B*PenaltyMatrix)/nrow(dtrain)
+  return(list(metric = "penalty_error", value = err))
+}
+watchlist=list(train = dtrain, test=dtest)
+
+params=list(eta=0.01,max_depth=8,objective="binary:logistic")
+
+model_xgb<-xgb.train(params = params,data = dtrain,verbose = 0,watchlist = watchlist,nrounds=10000,nthread=8,maximize=F,early_stopping_rounds = 100,scale_pos_weight=91,feval=evalerror)
+
+imp <-xgb.importance(feature_names = colnames(sparse_matrix),model = model_xgb)
+
+xgb.plot.importance(imp)
+
+pred_xgb<-predict(model_xgb,newdata = dtest)
+table(Test$content_1,pred_xgb>=0.5)
+
+```
+We are finalizing with this `xgboost` model. Now we will be doing our prediction on the `content_test.tsv` data.
+```{r}
+test <- read.csv("content_test.tsv",sep='\t')
+```
+### Removing Outliers from test data 
+#### From express total spend
+```{r test express total spend}
+boxplot(test$express.total.spend)
+
+outlier <- boxplot.stats(test$express.total.spend)$out
+#min(test$express.total.spend)
+test$express.total.spend[test$express.total.spend >= min(outlier)] <- min(outlier)
+#boxplot.stats(test$express.total.spend)$out
+boxplot(test$express.total.spend)
+#test$express.total.spend<-log(test$express.total.spend)
+```
+From metro total spend
+```{r test metro.total.spend}
+boxplot(test$metro.total.spend)
+outlier <- boxplot.stats(test$metro.total.spend)$out
+
+test$metro.total.spend[test$metro.total.spend >= min(outlier)] <- min(outlier)
+#boxplot.stats(test$metro.total.spend)$out
+boxplot(test$metro.total.spend)
+```
+From `superstore.total.spend`
+```{r test superstore.total.spend}
+boxplot(test$superstore.total.spend)
+outlier <- boxplot.stats(test$superstore.total.spend)$out
+
+test$superstore.total.spend[test$superstore.total.spend >= min(outlier)] <- min(outlier)
+boxplot(test$superstore.total.spend)
+```
+From `extra.total.spend`
+```{r test extra.total.spend}
+boxplot(test$extra.total.spend)
+outlier <- boxplot.stats(test$extra.total.spend)$out
+
+test$extra.total.spend[test$extra.total.spend >= min(outlier)] <- min(outlier)
+boxplot(test$extra.total.spend)
+
+```
+From `fandf.total.spend`
+```{r test fandf.total.spend}
+boxplot(test$fandf.total.spend)
+
+outlier <- boxplot.stats(test$fandf.total.spend)$out
+#min(test$fandf.total.spend)
+test$fandf.total.spend[test$fandf.total.spend >= min(outlier)] <- min(outlier)
+boxplot(test$fandf.total.spend)
+```
+From `petrol.total.spend`
+```{r test petrol.total.spend}
+boxplot(test$petrol.total.spend)
+
+outlier <- boxplot.stats(test$petrol.total.spend)$out
+test$petrol.total.spend[test$petrol.total.spend >= min(outlier)] <- min(outlier)
+boxplot(test$petrol.total.spend)
+
+```
+From `direct.total.spend`
+```{r test direct.total.spend}
+boxplot(test$direct.total.spend)
+
+outlier <- boxplot.stats(test$direct.total.spend)$out
+#min(test$direct.total.spend)
+test$direct.total.spend[test$direct.total.spend >= min(outlier)] <- min(outlier)
+boxplot(test$direct.total.spend)
+#hist(test$direct.total.spend)
+#test$direct.total.spend<-log(test$direct.total.spend)
+```
+We will be using the xgboost model built for prediction 
+```{r pred xgboost}
+sparse_test<-sparse.model.matrix(~.-1-customer.id-county,data = test)
+
+dtest2<-xgb.DMatrix(data=sparse_test)
+pred_test_xgb <- predict(model_xgb,newdata = dtest2)
+
+```
+### Calculating `LogLoss`.   
+We will be calculating logloss for the prediction of clicking on `content1` 
+
+```{r logloss}
+# Read the true values as 'labels'
+# labels = read.csv(file_name)
+#You will have to passthe true value as `labels`
+#logloss = LogLoss(y_pred = pred_test_xgb,y_true = labels)
+#logloss
+```
+
